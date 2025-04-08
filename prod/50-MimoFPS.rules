@@ -1,0 +1,2 @@
+# Put me in the /etc/udev/rules.d/ directory.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1ee7", MODE="0664", GROUP="plugdev", TAG+="uaccess"
