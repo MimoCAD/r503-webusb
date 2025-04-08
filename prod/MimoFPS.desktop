@@ -1,0 +1,6 @@
+# Put me in ~/.config/autostart
+[Desktop Entry]
+Type=Application
+Name=MimoFPS
+Exec=chromium --incognito --kiosk https://url.io/timeclock.php --remote-debugging-port=9222 --enable-experimental-web-platform-features
+StartupNotify=false
