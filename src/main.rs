@@ -185,21 +185,6 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
         self.read_ep.wait_enabled().await
     }
 
-    // Echo data back to the host.
-    #[allow(dead_code)]
-    async fn echo(&mut self) {
-        info!("Echo function");
-        let mut buf = [0; 64];
-        loop {
-            info!("Echo function, in loop");
-            let n = self.read_ep.read(&mut buf).await.unwrap();
-            let data = &buf[..n];
-            info!("Data read: {=[?]}", *data);
-            self.write_ep.write(data).await.unwrap();
-            info!("Data Write");
-        }
-    }
-
     async fn relay_command(&mut self) {
         let mut buf = [0u8; 64];
         loop {
@@ -218,6 +203,7 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
             // Read command buffer.
             let mut read_buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
             let mut data_read: Vec<u8, 32> = heapless::Vec::new(); // Save buffer.
+            let mut idx: u8 = 0;
 
             info!("Attempting read.");
             loop {
@@ -231,11 +217,21 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 {
                     Ok(..) => {
                         // Extract and save read byte.
-                        debug!("  r='{=u8:#04x}H' ({:03}D)", read_buf[0], read_buf[0]);
-                        let _ = data_read.push(read_buf[0]).unwrap();
+                        debug!(
+                            "UART Read: [{:03}] {=u8:#04X} ({:03})",
+                            idx, read_buf[0], read_buf[0]
+                        );
+                        let _ = match data_read.push(read_buf[0]) {
+                            Ok(..) => (),
+                            Err(e) => {
+                                error!("Unable to append {}", e);
+                                break;
+                            }
+                        };
                     }
                     Err(..) => break, // TimeoutError -> Ignore.
                 }
+                idx = idx + 1;
             }
             info!("Read successful");
             debug!("  read='{:?}'", data_read[..]);
