@@ -19,14 +19,17 @@
 
 use defmt::{debug, error, info};
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::{
+    join::join,
+    select::{Either, select},
+};
 use embassy_rp::{
     bind_interrupts,
     gpio::{Level, Output},
     peripherals::{UART0, USB},
     uart, usb,
 };
-use embassy_time::Duration;
+use embassy_time::{Duration, TimeoutError};
 use embassy_usb::{
     Builder, Config,
     class::web_usb::{Config as WebUsbConfig, State, Url, WebUsb},
@@ -152,8 +155,8 @@ async fn main(_spawner: Spawner) {
 }
 
 struct WebEndpoints<'d, D: Driver<'d>> {
-    write_ep: D::EndpointIn,
-    read_ep: D::EndpointOut,
+    ep_tx: D::EndpointIn,
+    ep_rx: D::EndpointOut,
     uart: uart::Uart<'static, UART0, embassy_rp::uart::Async>,
 }
 
@@ -167,77 +170,87 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
         let mut iface = func.interface();
         let mut alt = iface.alt_setting(0xff, 0x00, 0x00, None);
 
-        let write_ep = alt.endpoint_bulk_in(config.max_packet_size);
-        let read_ep = alt.endpoint_bulk_out(config.max_packet_size);
+        // It's "IN" to the end point, so it's our transmitter.
+        let ep_tx = alt.endpoint_bulk_in(config.max_packet_size);
+        // It's "OUT" to the end point, so it's our receiver.
+        let ep_rx = alt.endpoint_bulk_out(config.max_packet_size);
 
-        WebEndpoints {
-            write_ep,
-            read_ep,
-            uart,
-        }
+        WebEndpoints { ep_tx, ep_rx, uart }
     }
 
     // Wait until the device's endpoints are enabled.
     async fn wait_connected(&mut self) {
-        self.read_ep.wait_enabled().await
+        self.ep_rx.wait_enabled().await
     }
 
     async fn relay_command(&mut self) {
         let mut buf = [0u8; 64];
+        let mut read_buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
+
         loop {
-            // Read a command from the host via WebUSB.
-            let n = self.read_ep.read(&mut buf).await.unwrap();
-            let command = &buf[..n];
-            info!("Received command from host: {=[?]}", command);
-
-            // Forward the command to the UART.
-            match self.uart.write(command).await {
-                Ok(..) => info!("Wrote to UART"),
-                Err(e) => error!("Write Error: {:?}", e),
-            };
-
-            // Read the reply from the UART.
-            // Read command buffer.
-            let mut read_buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
-            let mut data_read: Vec<u8, 64> = heapless::Vec::new(); // Save buffer.
-            let mut idx: u8 = 0;
-
-            info!("Attempting read.");
-            loop {
-                // Some commands may need longer to get an answer from the fingerprint module.
-                // For the moement, we are just going to test with 500 ms.
-                match embassy_time::with_timeout(
-                    Duration::from_millis(500),
+            match select(
+                self.ep_rx.read(&mut buf),
+                embassy_time::with_timeout(
+                    Duration::from_millis(10),
                     self.uart.read(&mut read_buf),
-                )
-                .await
-                {
-                    Ok(..) => {
-                        // Extract and save read byte.
-                        debug!(
-                            "UART Read: [{:03}] {=u8:#04X} ({:03})",
-                            idx, read_buf[0], read_buf[0]
-                        );
-                        let _ = match data_read.push(read_buf[0]) {
-                            Ok(..) => (),
-                            Err(e) => {
-                                error!("Unable to append {}", e);
-                                break;
-                            }
-                        };
-                    }
-                    Err(..) => break, // TimeoutError -> Ignore.
-                }
-                idx = idx + 1;
-            }
-            info!("Read successful");
-            debug!("  read='{:?}'", data_read[..]);
+                ),
+            )
+            .await
+            {
+                Either::First(n) => {
+                    let command = &buf[..n.unwrap()];
+                    info!("Received command from host: {=[?]}", command);
 
-            // Send the UART reply back to the host.
-            info!("Replying back to WebUSB Host");
-            match self.write_ep.write(&data_read[..]).await {
-                Ok(..) => info!("Sent successfully."),
-                Err(e) => error!("Error: {}", e),
+                    // Forward the command to the UART.
+                    match self.uart.write(command).await {
+                        Ok(..) => info!("Wrote to UART"),
+                        Err(e) => error!("Write Error: {:?}", e),
+                    };
+                }
+                Either::Second(val) => {
+                    match val {
+                        Ok(Ok(())) => {
+                            let mut data_read: Vec<u8, 255> = heapless::Vec::new(); // Save buffer.
+
+                            loop {
+                                // Some commands may need longer to get an answer from the fingerprint module.
+                                // For the moement, we are just going to test with 200 ms.
+                                match embassy_time::with_timeout(
+                                    Duration::from_millis(10),
+                                    self.uart.read(&mut read_buf),
+                                )
+                                .await
+                                {
+                                    Ok(..) => {
+                                        // Extract and save read byte.
+                                        let _ = match data_read.push(read_buf[0]) {
+                                            Ok(..) => (),
+                                            Err(e) => {
+                                                error!("Unable to append {}", e);
+                                                break;
+                                            }
+                                        };
+                                    }
+                                    Err(..) => break, // TimeoutError -> Ignore.
+                                }
+                            }
+                            debug!("Read successful");
+
+                            // Send the UART reply back to the WebUSB host.
+                            match self.ep_tx.write(&data_read[..]).await {
+                                Ok(..) => debug!("Sent successfully."),
+                                Err(e) => error!("Error: {}", e),
+                            };
+                            debug!("WebUSB Write: {=[u8]}", data_read);
+                        }
+                        Ok(Err(e)) => {
+                            error!("UART Error: {}", e);
+                        }
+                        Err(TimeoutError) => {
+                            // We poll UART alot, it not having data is expected.
+                        }
+                    }
+                }
             };
         }
     }
