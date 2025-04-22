@@ -458,7 +458,6 @@ checksum = "8d2c8cdff05a7a51ba0087489ea44b0b1d97a296ca6b1d6d1a33ea7423d34049"
 dependencies = [
  "cfg-if",
  "critical-section",
- "defmt 0.3.100",
  "embedded-io-async",
  "futures-sink",
  "futures-util",
@@ -507,7 +506,6 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e651b9b7b47b514e6e6d1940a6e2e300891a2c33641917130643602a0cb6386"
 dependencies = [
- "defmt 0.3.100",
  "embassy-futures",
  "embassy-net-driver-channel",
  "embassy-sync",
@@ -1088,7 +1086,6 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embedded-io-async",
- "heapless",
  "panic-probe",
  "r503",
  "smart-leds",

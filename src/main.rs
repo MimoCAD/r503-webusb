@@ -27,7 +27,10 @@ use embassy_rp::{
     bind_interrupts,
     gpio::{Level, Output},
     peripherals::{UART0, USB},
-    uart, usb,
+    uart,
+    uart::BufferedUartRx,
+    uart::BufferedUartTx,
+    usb,
 };
 use embassy_time::{Duration, TimeoutError};
 use embassy_usb::{
@@ -36,13 +39,16 @@ use embassy_usb::{
     driver::{Driver, Endpoint, EndpointIn, EndpointOut},
     msos::{self, windows_version},
 };
-use heapless::Vec;
-use static_cell::StaticCell;
+use embedded_io_async::{Read, Write};
+use static_cell::{ConstStaticCell, StaticCell};
 use {defmt_rtt as _, panic_probe as _};
+
+static TX_BUF_CELL: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
+static RX_BUF_CELL: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 
 bind_interrupts!(pub struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
-    UART0_IRQ => uart::InterruptHandler<UART0>;
+    UART0_IRQ => uart::BufferedInterruptHandler<UART0>;
 });
 
 // This is a randomly generated GUID to allow clients on Windows to find our device
@@ -50,6 +56,8 @@ const DEVICE_INTERFACE_GUIDS: &[&str] = &["{AFB9A6FB-30BA-44BC-9232-806CFC875321
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
+    info!("Hello World");
+
     let p = embassy_rp::init(Default::default());
 
     // Turn on the LED to state that we have power and we are running.
@@ -64,23 +72,32 @@ async fn main(_spawner: Spawner) {
 
     // Finger Print Sensor Setup.
     // UART
+    info!("UART");
     let mut uart_config = uart::Config::default();
     uart_config.baudrate = 57600;
     uart_config.stop_bits = uart::StopBits::STOP1;
     uart_config.data_bits = uart::DataBits::DataBits8;
     uart_config.parity = uart::Parity::ParityNone;
 
-    let uart = uart::Uart::new(
+    // safely "take" two &'static mut buffers
+    info!("Buffers TX");
+    let tx_buf: &'static mut [u8; 256] = TX_BUF_CELL.take();
+    info!("Buffers RX");
+    let rx_buf: &'static mut [u8; 256] = RX_BUF_CELL.take();
+
+    info!("BufferedUART");
+    let uart = uart::BufferedUart::new(
         p.UART0,
-        p.PIN_0,
-        p.PIN_1,
-        Irqs,
-        p.DMA_CH0,
-        p.DMA_CH1,
+        Irqs,    // our bound interrupt struct
+        p.PIN_0, // TX pin
+        p.PIN_1, // RX pin
+        tx_buf,  // TX backing buffer
+        rx_buf,  // RX backing buffer
         uart_config,
     );
 
     // Create embassy-usb Config
+    info!("USB Config");
     let mut config = Config::new(0x1EE7, 0x1337);
     config.manufacturer = Some("MimoCAD");
     config.product = Some("MimoFPS");
@@ -98,6 +115,7 @@ async fn main(_spawner: Spawner) {
     let mut control_buf = [0; 64];
     let mut msos_descriptor = [0; 256];
 
+    info!("WebUSB Config");
     let webusb_config = WebUsbConfig {
         max_packet_size: 64,
         vendor_code: 1,
@@ -155,101 +173,86 @@ async fn main(_spawner: Spawner) {
 }
 
 struct WebEndpoints<'d, D: Driver<'d>> {
-    ep_tx: D::EndpointIn,
-    ep_rx: D::EndpointOut,
-    uart: uart::Uart<'static, UART0, embassy_rp::uart::Async>,
+    usb_tx: D::EndpointIn,
+    usb_rx: D::EndpointOut,
+    uart_tx: BufferedUartTx<'static, UART0>,
+    uart_rx: BufferedUartRx<'static, UART0>,
 }
 
 impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
     fn new(
         builder: &mut Builder<'d, D>,
         config: &'d WebUsbConfig<'d>,
-        uart: uart::Uart<'static, UART0, embassy_rp::uart::Async>,
+        uart: uart::BufferedUart<'static, UART0>,
     ) -> Self {
         let mut func = builder.function(0xff, 0x00, 0x00);
         let mut iface = func.interface();
         let mut alt = iface.alt_setting(0xff, 0x00, 0x00, None);
 
-        // It's "IN" to the end point, so it's our transmitter.
-        let ep_tx = alt.endpoint_bulk_in(config.max_packet_size);
-        // It's "OUT" to the end point, so it's our receiver.
-        let ep_rx = alt.endpoint_bulk_out(config.max_packet_size);
+        // It's "IN" to the usb end point, so it's our transmitter.
+        let usb_tx = alt.endpoint_bulk_in(config.max_packet_size);
+        // It's "OUT" of the usb end point, so it's our receiver.
+        let usb_rx = alt.endpoint_bulk_out(config.max_packet_size);
+        // We split our uart interface into tx and rx parts.
+        let (uart_tx, uart_rx) = uart.split();
 
-        WebEndpoints { ep_tx, ep_rx, uart }
+        WebEndpoints {
+            usb_tx,
+            usb_rx,
+            uart_tx,
+            uart_rx,
+        }
     }
 
     // Wait until the device's endpoints are enabled.
     async fn wait_connected(&mut self) {
-        self.ep_rx.wait_enabled().await
+        self.usb_rx.wait_enabled().await
     }
 
     async fn relay_command(&mut self) {
-        let mut buf = [0u8; 64];
-        let mut read_buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
+        let mut usb_buf = [0u8; 256];
+        let mut uart_buf = [0u8; 256]; // Can only read one byte at a time!
 
         loop {
             match select(
-                self.ep_rx.read(&mut buf),
+                self.usb_rx.read(&mut usb_buf),
                 embassy_time::with_timeout(
                     Duration::from_millis(10),
-                    self.uart.read(&mut read_buf),
+                    self.uart_rx.read(&mut uart_buf),
                 ),
             )
             .await
             {
-                Either::First(n) => {
-                    let command = &buf[..n.unwrap()];
+                // First is USB Side
+                Either::First(Ok(n)) => {
+                    let command = &usb_buf[..n];
                     info!("Received command from host: {=[?]}", command);
 
                     // Forward the command to the UART.
-                    match self.uart.write(command).await {
+                    match self.uart_tx.write(command).await {
                         Ok(..) => info!("Wrote to UART"),
                         Err(e) => error!("Write Error: {:?}", e),
                     };
                 }
-                Either::Second(val) => {
-                    match val {
-                        Ok(Ok(())) => {
-                            let mut data_read: Vec<u8, 255> = heapless::Vec::new(); // Save buffer.
+                Either::First(Err(e)) => {
+                    error!("WebUSB Read Error: {}", e);
+                }
+                // Second is UART Side
+                Either::Second(Ok(Ok(n))) => {
+                    let payload = &uart_buf[..n];
 
-                            loop {
-                                // Some commands may need longer to get an answer from the fingerprint module.
-                                // For the moement, we are just going to test with 200 ms.
-                                match embassy_time::with_timeout(
-                                    Duration::from_millis(10),
-                                    self.uart.read(&mut read_buf),
-                                )
-                                .await
-                                {
-                                    Ok(..) => {
-                                        // Extract and save read byte.
-                                        let _ = match data_read.push(read_buf[0]) {
-                                            Ok(..) => (),
-                                            Err(e) => {
-                                                error!("Unable to append {}", e);
-                                                break;
-                                            }
-                                        };
-                                    }
-                                    Err(..) => break, // TimeoutError -> Ignore.
-                                }
-                            }
-                            debug!("Read successful");
-
-                            // Send the UART reply back to the WebUSB host.
-                            match self.ep_tx.write(&data_read[..]).await {
-                                Ok(..) => debug!("Sent successfully."),
-                                Err(e) => error!("Error: {}", e),
-                            };
-                            debug!("WebUSB Write: {=[u8]}", data_read);
-                        }
-                        Ok(Err(e)) => {
-                            error!("UART Error: {}", e);
-                        }
-                        Err(TimeoutError) => {
-                            // We poll UART alot, it not having data is expected.
-                        }
-                    }
+                    // Send the UART reply back to the WebUSB host.
+                    match self.usb_tx.write(&payload[..]).await {
+                        Ok(..) => debug!("Sent successfully."),
+                        Err(e) => error!("Error: {}", e),
+                    };
+                    debug!("WebUSB Write: {=[u8]}", payload);
+                }
+                Either::Second(Ok(Err(e))) => {
+                    error!("UART Error: {}", e);
+                }
+                Either::Second(Err(TimeoutError)) => {
+                    // We poll UART alot, it not having data is expected.
                 }
             };
         }

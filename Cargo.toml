@@ -22,14 +22,13 @@ embassy-rp = { version = "0.4", features = [
     "time-driver",
     "unstable-pac",
 ] }
-embassy-sync = { version = "0.6", features = ["defmt"] }
+embassy-sync = { version = "0.6" }
 embassy-time = { version = "0.4", features = [
     "defmt",
     "defmt-timestamp-uptime",
 ] }
-embassy-usb = { version = "0.4", features = ["defmt"] }
+embassy-usb = { version = "0.4" }
 embedded-io-async = { version = "0.6", features = ["defmt-03"] }
-heapless = "0.8"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
