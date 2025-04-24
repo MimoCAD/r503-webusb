@@ -40,6 +40,7 @@ use embassy_usb::{
     msos::{self, windows_version},
 };
 use embedded_io_async::{Read, Write};
+use heapless::Vec;
 use static_cell::{ConstStaticCell, StaticCell};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -56,8 +57,6 @@ const DEVICE_INTERFACE_GUIDS: &[&str] = &["{AFB9A6FB-30BA-44BC-9232-806CFC875321
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    info!("Hello World");
-
     let p = embassy_rp::init(Default::default());
 
     // Turn on the LED to state that we have power and we are running.
@@ -72,7 +71,6 @@ async fn main(_spawner: Spawner) {
 
     // Finger Print Sensor Setup.
     // UART
-    info!("UART");
     let mut uart_config = uart::Config::default();
     uart_config.baudrate = 57600;
     uart_config.stop_bits = uart::StopBits::STOP1;
@@ -80,12 +78,9 @@ async fn main(_spawner: Spawner) {
     uart_config.parity = uart::Parity::ParityNone;
 
     // safely "take" two &'static mut buffers
-    info!("Buffers TX");
     let tx_buf: &'static mut [u8; 256] = TX_BUF_CELL.take();
-    info!("Buffers RX");
     let rx_buf: &'static mut [u8; 256] = RX_BUF_CELL.take();
 
-    info!("BufferedUART");
     let uart = uart::BufferedUart::new(
         p.UART0,
         Irqs,    // our bound interrupt struct
@@ -97,7 +92,6 @@ async fn main(_spawner: Spawner) {
     );
 
     // Create embassy-usb Config
-    info!("USB Config");
     let mut config = Config::new(0x1EE7, 0x1337);
     config.manufacturer = Some("MimoCAD");
     config.product = Some("MimoFPS");
@@ -115,7 +109,6 @@ async fn main(_spawner: Spawner) {
     let mut control_buf = [0; 64];
     let mut msos_descriptor = [0; 256];
 
-    info!("WebUSB Config");
     let webusb_config = WebUsbConfig {
         max_packet_size: 64,
         vendor_code: 1,
@@ -211,7 +204,8 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
 
     async fn relay_command(&mut self) {
         let mut usb_buf = [0u8; 256];
-        let mut uart_buf = [0u8; 256]; // Can only read one byte at a time!
+        let mut uart_buf = [0u8; 256];
+        let mut payload: Vec<u8, 256> = Vec::new();
 
         loop {
             match select(
@@ -239,14 +233,38 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 }
                 // Second is UART Side
                 Either::Second(Ok(Ok(n))) => {
-                    let payload = &uart_buf[..n];
+                    payload
+                        .extend_from_slice(&uart_buf[..n])
+                        .unwrap_or_else(|_| panic!("payload capacity exceeded"));
 
-                    // Send the UART reply back to the WebUSB host.
-                    match self.usb_tx.write(&payload[..]).await {
-                        Ok(..) => debug!("Sent successfully."),
-                        Err(e) => error!("Error: {}", e),
+                    match whole_packet(&payload, &[0xFF, 0xFF, 0xFF, 0xFF]) {
+                        Ok(len) => {
+                            info!("whole_packet len: {}", len);
+                            info!("Payload well formed: {}", payload[..len]);
+
+                            // Send the UART reply back to the WebUSB host.
+                            match self.usb_tx.write(&payload[..len]).await {
+                                Ok(..) => debug!("Sent successfully."),
+                                Err(e) => error!("Error: {}", e),
+                            };
+                            debug!("WebUSB Write: {=[u8]}", payload[..len]);
+
+                            let total = payload.len();
+                            let remaining = total - len;
+
+                            // slide the leftover bytes [len..total] down to the front
+                            let buf = payload.as_mut_slice();
+                            buf.copy_within(len..total, 0);
+                            // adjust the Vec’s length
+                            payload.truncate(remaining);
+                        }
+                        Err(..) => {
+                            debug!("Payload not well formed yet: {}", payload[..]);
+                        }
                     };
-                    debug!("WebUSB Write: {=[u8]}", payload);
+                }
+                Either::Second(Ok(Err(uart::Error::Break))) => {
+                    // Normal for UART operations.
                 }
                 Either::Second(Ok(Err(e))) => {
                     error!("UART Error: {}", e);
@@ -257,6 +275,43 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
             };
         }
     }
+}
+
+/// Looks into the buffer and finds well formed data frames, returning their offset.
+fn whole_packet(buffer: &[u8], address: &[u8; 4]) -> Result<usize, bool> {
+    // Sanity Check (12 bytes is the smallest valid packet)
+    if buffer.len() < 12 {
+        debug!("Not enough data in the buffer.");
+        return Err(false);
+    }
+    // Header
+    if buffer[0..2] != [0xEF, 0x01] {
+        debug!("Header Does Not Match");
+        return Err(false);
+    }
+    // Address
+    if buffer[2..6] != address[..] {
+        debug!("Address Does Not Match");
+        return Err(false);
+    }
+    // PID
+    debug!("PID: {}", buffer[6]);
+    // Length
+    let len = usize::from_be_bytes([0, 0, buffer[7], buffer[8]]);
+    debug!("LEN: {}", len);
+    if len < 3 {
+        debug!("Length is to short.");
+        return Err(false);
+    }
+
+    // The + 9 is from the offset into the packet for the length.
+    if buffer.len() < (len + 9) {
+        debug!("Not a whole packet yet.");
+        return Err(false);
+    }
+
+    // We should have enough data to create a whole frame.
+    return Ok(len + 9);
 }
 
 /// Converts the RP2350's OPT Unique ID into a &str.
