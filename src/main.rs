@@ -17,7 +17,8 @@
 #![no_std]
 #![no_main]
 
-use defmt::{debug, error, info};
+use core::fmt::Write as BufWrite;
+use defmt::{debug, error, info, trace, warn};
 use embassy_executor::Spawner;
 use embassy_futures::{
     join::join,
@@ -40,7 +41,7 @@ use embassy_usb::{
     msos::{self, windows_version},
 };
 use embedded_io_async::{Read, Write};
-use heapless::Vec;
+use heapless::{String, Vec};
 use static_cell::{ConstStaticCell, StaticCell};
 use {defmt_rtt as _, panic_probe as _};
 
@@ -220,11 +221,11 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 // First is USB Side
                 Either::First(Ok(n)) => {
                     let command = &usb_buf[..n];
-                    info!("Received command from host: {=[u8]:#04X}", command);
+                    pretty_print(Lvl::Info, "WebUSB -> UART", &command);
 
                     // Forward the command to the UART.
                     match self.uart_tx.write(command).await {
-                        Ok(..) => info!("Wrote to UART"),
+                        Ok(..) => debug!("Send to UART Successfully."),
                         Err(e) => error!("Write Error: {:?}", e),
                     };
                 }
@@ -239,15 +240,15 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
 
                     match whole_packet(&payload, &[0xFF, 0xFF, 0xFF, 0xFF]) {
                         Ok(len) => {
-                            info!("whole_packet len: {}", len);
-                            info!("Payload well formed: {=[u8]:#04X}", payload[..len]);
+                            debug!("whole_packet len: {}", len);
+                            pretty_print(Lvl::Info, "UART -> WebUSB", &payload[..len]);
 
                             // Send the UART reply back to the WebUSB host.
                             match self.usb_tx.write(&payload[..len]).await {
-                                Ok(..) => debug!("Sent successfully."),
+                                Ok(..) => debug!("Sent to WebUSB Successfully."),
                                 Err(e) => error!("Error: {}", e),
                             };
-                            debug!("WebUSB Write: {=[u8]:#04X}", payload[..len]);
+                            pretty_print(Lvl::Debug, "WebUSB Write:", &payload[..len]);
 
                             let total = payload.len();
                             let remaining = total - len;
@@ -258,9 +259,7 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                             // adjust the Vec’s length
                             payload.truncate(remaining);
                         }
-                        Err(..) => {
-                            debug!("Payload not well formed yet: {=[u8]:#04X}", payload[..]);
-                        }
+                        Err(..) => {}
                     };
                 }
                 Either::Second(Ok(Err(uart::Error::Break))) => {
@@ -274,6 +273,50 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 }
             };
         }
+    }
+}
+
+#[allow(dead_code)]
+enum Lvl {
+    Trace,
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
+fn pretty_print(level: Lvl, text: &str, bytes: &[u8]) {
+    // Biggest packet is 256 bytes, each byte could have 4 bytes surrounding for color codes.
+    let mut buf: String<1024> = String::new();
+    let len = bytes.len();
+
+    write!(buf, "[").unwrap();
+    for (idx, &b) in bytes.iter().enumerate() {
+        if idx != 0 {
+            write!(buf, ", ").unwrap();
+        }
+        match idx {
+            0..2 => write!(buf, "\x1B[31m{:#04X}\x1B[0m", b).unwrap(), // Header (RED)
+            2..6 => write!(buf, "\x1B[32m{:#04X}\x1B[0m", b).unwrap(), // Address (GREEN)
+            6 => write!(buf, "\x1B[33m{:#04X}\x1B[0m", b).unwrap(),    // PID (YELLOW)
+            7..9 => write!(buf, "\x1B[34m{:#04X}\x1B[0m", b).unwrap(), // Length (BLUE)
+            idx if idx >= len.saturating_sub(2) => {
+                // Checksum (MAGENTA)
+                // last two bytes → checksum
+                write!(buf, "\x1B[35m{:#04X}\x1B[0m", b).unwrap();
+            }
+            _ => write!(buf, "{:#04X}", b).unwrap(), // DATA (Uncolored)
+        }
+    }
+    write!(buf, "]").unwrap();
+    write!(buf, " ({})", buf.len()).unwrap();
+
+    match level {
+        Lvl::Trace => trace!("{=str} {=str}", text, buf.as_str()),
+        Lvl::Debug => debug!("{=str} {=str}", text, buf.as_str()),
+        Lvl::Info => info!("{=str} {=str}", text, buf.as_str()),
+        Lvl::Warning => warn!("{=str} {=str}", text, buf.as_str()),
+        Lvl::Error => error!("{=str} {=str}", text, buf.as_str()),
     }
 }
 
