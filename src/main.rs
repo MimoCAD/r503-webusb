@@ -300,6 +300,7 @@ fn pretty_print(level: Lvl, text: &str, bytes: &[u8]) {
             2..6 => write!(buf, "\x1B[32m{:#04X}\x1B[0m", b).unwrap(), // Address (GREEN)
             6 => write!(buf, "\x1B[33m{:#04X}\x1B[0m", b).unwrap(),    // PID (YELLOW)
             7..9 => write!(buf, "\x1B[34m{:#04X}\x1B[0m", b).unwrap(), // Length (BLUE)
+            9 => write!(buf, "\x1B[36m{:#04X}\x1B[0m", b).unwrap(),    // Confirmation Code (CYAN)
             idx if idx >= len.saturating_sub(2) => {
                 // Checksum (MAGENTA)
                 // last two bytes → checksum
