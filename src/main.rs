@@ -220,7 +220,7 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 // First is USB Side
                 Either::First(Ok(n)) => {
                     let command = &usb_buf[..n];
-                    info!("Received command from host: {=[?]}", command);
+                    info!("Received command from host: {=[u8]:#04X}", command);
 
                     // Forward the command to the UART.
                     match self.uart_tx.write(command).await {
@@ -240,14 +240,14 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                     match whole_packet(&payload, &[0xFF, 0xFF, 0xFF, 0xFF]) {
                         Ok(len) => {
                             info!("whole_packet len: {}", len);
-                            info!("Payload well formed: {}", payload[..len]);
+                            info!("Payload well formed: {=[u8]:#04X}", payload[..len]);
 
                             // Send the UART reply back to the WebUSB host.
                             match self.usb_tx.write(&payload[..len]).await {
                                 Ok(..) => debug!("Sent successfully."),
                                 Err(e) => error!("Error: {}", e),
                             };
-                            debug!("WebUSB Write: {=[u8]}", payload[..len]);
+                            debug!("WebUSB Write: {=[u8]:#04X}", payload[..len]);
 
                             let total = payload.len();
                             let remaining = total - len;
@@ -259,7 +259,7 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                             payload.truncate(remaining);
                         }
                         Err(..) => {
-                            debug!("Payload not well formed yet: {}", payload[..]);
+                            debug!("Payload not well formed yet: {=[u8]:#04X}", payload[..]);
                         }
                     };
                 }
