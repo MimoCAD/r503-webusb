@@ -32,3 +32,16 @@ Probe-rs is super cool and you'll need to install that in order to be able to fl
  * Pololu JST SH-Style Connector [Top-Entry](https://www.pololu.com/product/4771) or [Side-Entry](https://www.pololu.com/product/4773)
  * [Dupont Jumper Cables M/M](http://adafru.it/759)
  * [Soldering Iron](https://www.adafruit.com/category/559)
+
+# Platform
+## `udev` Rules.
+`udev` rules need to be copied over to the `/etc/udev/rules.d/` directory. Ours is of course in the `prod` folder of this repo and is called `50-MimoFPS.rules`. Then run `udevadm control --reload-rules && udevadm trigger` in order to load that rule file, or restart the computer. Up to you.
+
+## Chrome / Chromium (Raspberry Pi OS / Debian)
+In order to access WebUSB devices automatically, as in not have to deal with the permission for access on each reload of chrome, we need to create a policy json file in `/etc/chromium/policies/managed`. This file is located in this repo's `prod` folder and is called `MimoFPS.json`. You'll please note that the `vendorId` and `prodId` are both in their decimal form. This appears to be required as their hex form did not parse correctly. Once copied over, restart chrome and goto `chrome://policy/`. It should now show under Chrome Polices in the table at least one item (you might have more, but if you do you probably didn't need this tip.) with the Policy name of `WebUsbAllowDevicesForUrls`. You can show more to make sure it's the one we just installed.
+
+## Chrome Kiosk Mode AutoStart
+In order to load the Raspberry Pi OS (or most Debian based host systems, although if you're using a different system, good luck. I'm not helping with other OSes.) directly into the TimeClock, we can add a .desktop file into our `~/.config/autostart` directory of the user that logs into the Raspberry Pi on bootup. The *.desktop file is in the `prod` directory of this repo. Just copy it right over. You'll notice that it includes `--enable-experimental-web-platform-features` flag. This is because in Kiosk mode you're not be default allowed to be experimental web technologies, and WebUSB is considered such as it hasn't yet be adopted by other major browsers.
+
+## URLS
+Don't forget to change the URLs from `https://url.io/` to where you are actually depolying this to. For the policy files, you don't need the exact URL, the domain in general will work fine so it operates on the entire domain space.

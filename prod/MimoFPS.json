@@ -1,0 +1,13 @@
+{
+    "WebUsbAllowDevicesForUrls": [
+        {
+            "devices": [
+                {
+                    "vendor_id": 7911,
+                    "product_id": 4919
+                }
+            ],
+            "urls": ["https://url.io/"]
+        }
+    ]
+}
