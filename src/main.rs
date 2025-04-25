@@ -33,7 +33,7 @@ use embassy_rp::{
     uart::BufferedUartTx,
     usb,
 };
-use embassy_time::{Duration, TimeoutError};
+use embassy_time::Duration;
 use embassy_usb::{
     Builder, Config,
     class::web_usb::{Config as WebUsbConfig, State, Url, WebUsb},
@@ -268,7 +268,7 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
                 Either::Second(Ok(Err(e))) => {
                     error!("UART Error: {}", e);
                 }
-                Either::Second(Err(TimeoutError)) => {
+                Either::Second(Err(embassy_time::TimeoutError)) => {
                     // We poll UART alot, it not having data is expected.
                 }
             };
