@@ -218,10 +218,16 @@ impl<'d, D: Driver<'d>> WebEndpoints<'d, D> {
             )
             .await
             {
-                // First is USB Side
+                // First is WebUSB Side
                 Either::First(Ok(n)) => {
                     let command = &usb_buf[..n];
                     pretty_print(Lvl::Info, "WebUSB -> UART", &command);
+
+                    // Soft Reset
+                    if command[9] == 0x3D {
+                        payload.clear();
+                        info!("Soft Reset: Cleared Payload Buffer");
+                    }
 
                     // Forward the command to the UART.
                     match self.uart_tx.write(command).await {
@@ -323,6 +329,8 @@ fn pretty_print(level: Lvl, text: &str, bytes: &[u8]) {
 
 /// Looks into the buffer and finds well formed data frames, returning their offset.
 fn whole_packet(buffer: &[u8], address: &[u8; 4]) -> Result<usize, bool> {
+    pretty_print(Lvl::Trace, "Whole Packet Buffer:", buffer);
+
     // Sanity Check (12 bytes is the smallest valid packet)
     if buffer.len() < 12 {
         debug!("Not enough data in the buffer.");
@@ -342,7 +350,7 @@ fn whole_packet(buffer: &[u8], address: &[u8; 4]) -> Result<usize, bool> {
     debug!("PID: {}", buffer[6]);
     // Length
     let len = usize::from_be_bytes([0, 0, buffer[7], buffer[8]]);
-    debug!("LEN: {}", len);
+    debug!("Length: {} | Have: {}", len, buffer.len());
     if len < 3 {
         debug!("Length is to short.");
         return Err(false);
