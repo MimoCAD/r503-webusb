@@ -45,3 +45,17 @@ In order to load the Raspberry Pi OS (or most Debian based host systems, althoug
 
 ## URLS
 Don't forget to change the URLs from `https://url.io/` to where you are actually depolying this to. For the policy files, you don't need the exact URL, the domain in general will work fine so it operates on the entire domain space.
+
+# Chrome Remote Debug
+You may have noticed in the `/prod/MimoFPS.desktop` file that we set the `--remote-debugging-port=9222` arg. By default this only binds to the local host `127.0.0.1` class addresses. In order to access that from a remote computer we can create an SSH tunnel with:
+
+`ssh -L 9222:127.0.0.1:9222 <DeviceHostNameORIP>`
+
+  * `ssh` is the command.
+  * `-L` option args are separated by `:` and is used to bind a port on the local machine with a remote port at the remote destination IP address.
+    * Local Port to bind.
+    * Remote Destination IP / Hostname
+    * Remote Port to use.
+  * `<DeviceHostNameORIP>` is the Hostname or IP address of the device that is hosting the chrome kiosk with the finger print sensor attached.
+
+From there, go to [`chrome://inspect`](chrome://inspect) and select the device you want to inspect.
